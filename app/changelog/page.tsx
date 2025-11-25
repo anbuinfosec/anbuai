@@ -31,16 +31,21 @@ export default function ChangelogPage() {
   const [changelog, setChangelog] = useState<ChangelogEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [repository, setRepository] = useState<string>("")
 
   useEffect(() => {
     const fetchChangelog = async () => {
       try {
-        const response = await fetch("/api/changelog")
+        // Try to get repository from environment or use query parameter
+        const repo = process.env.NEXT_PUBLIC_GITHUB_REPO || "anbuinfosec/anbuai"
+        const response = await fetch(`/api/changelog?repo=${encodeURIComponent(repo)}`)
         if (response.ok) {
           const data = await response.json()
           setChangelog(data.changelog)
+          setRepository(data.repository || repo)
         } else {
-          setError("Failed to load changelog")
+          const errorData = await response.json()
+          setError(errorData.message || "Failed to load changelog")
         }
       } catch (err) {
         setError("Failed to fetch changelog")
@@ -111,11 +116,25 @@ export default function ChangelogPage() {
           <div className="text-center mb-12">
             <Badge className="mb-4 bg-primary/10 text-primary border-primary/20">
               <Sparkles className="h-3 w-3 mr-1" />
-              Git History
+              GitHub Repository
             </Badge>
             <h1 className="text-3xl md:text-4xl font-bold mb-4">Changelog</h1>
             <p className="text-base md:text-lg text-muted-foreground max-w-2xl mx-auto">
-              Auto-generated from git commit history
+              {repository ? (
+                <>
+                  Commits from{" "}
+                  <a 
+                    href={`https://github.com/${repository}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-primary hover:underline font-mono"
+                  >
+                    {repository}
+                  </a>
+                </>
+              ) : (
+                "Auto-generated from GitHub commits"
+              )}
             </p>
           </div>
 

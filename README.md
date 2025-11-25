@@ -153,10 +153,50 @@ GET /api/status
 
 ### Changelog API
 ```bash
-GET /api/changelog
+# Fetch changelog from GitHub repository
+GET /api/changelog?repo=owner/repo
+
+# Example response
+{
+  "changelog": [
+    {
+      "date": "2025-11-25",
+      "commits": [...]
+    }
+  ],
+  "totalCommits": 50,
+  "repository": "owner/repo",
+  "timestamp": "2025-11-25T12:00:00.000Z"
+}
 ```
 
+## 🔧 Configuration
 
+### Environment Variables
+
+Create a `.env.local` file in the root directory:
+
+```env
+# API Keys
+OPENAI_API_KEY=your_openai_api_key
+ANTHROPIC_API_KEY=your_anthropic_api_key
+GOOGLE_API_KEY=your_google_api_key
+
+# GitHub Configuration (for Changelog)
+GITHUB_REPO=owner/repo
+GITHUB_TOKEN=ghp_your_token  # Optional, for higher rate limits
+NEXT_PUBLIC_GITHUB_REPO=owner/repo
+
+# Optional
+NEXT_PUBLIC_APP_URL=http://localhost:3000
+```
+
+**GitHub Token Setup:**
+1. Go to [GitHub Settings → Tokens](https://github.com/settings/tokens)
+2. Generate a new token with `repo` scope
+3. Add it to your `.env.local` file
+
+Without a token, you'll be limited to 60 requests/hour. With a token, you get 5,000 requests/hour.
 
 ### Tailwind Configuration
 
@@ -204,10 +244,12 @@ Visit `/status` to view:
 
 ### Changelog
 Visit `/changelog` to view:
-- Git commit history
+- GitHub commit history
 - File change statistics
 - Author information
 - Detailed commit messages
+
+**Note:** Requires `GITHUB_REPO` environment variable to be set.
 
 ## 🤝 Contributing
 

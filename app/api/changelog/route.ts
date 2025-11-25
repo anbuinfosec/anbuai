@@ -1,8 +1,4 @@
 import { NextResponse } from "next/server"
-import { exec } from "child_process"
-import { promisify } from "util"
-
-const execAsync = promisify(exec)
 
 interface GitCommit {
   hash: string
@@ -22,82 +18,139 @@ interface ChangelogEntry {
   commits: GitCommit[]
 }
 
-export async function GET() {
+interface GitHubCommit {
+  sha: string
+  commit: {
+    author: {
+      name: string
+      email: string
+      date: string
+    }
+    message: string
+  }
+  author: {
+    login: string
+    avatar_url: string
+  } | null
+  stats?: {
+    additions: number
+    deletions: number
+    total: number
+  }
+  files?: Array<{
+    filename: string
+    status: string
+    additions: number
+    deletions: number
+    changes: number
+  }>
+}
+
+export async function GET(request: Request) {
   try {
-    // Check if git is available and this is a git repository
-    try {
-      await execAsync("git rev-parse --git-dir")
-    } catch {
+    const { searchParams } = new URL(request.url)
+    const repo = searchParams.get("repo") || process.env.GITHUB_REPO
+    const token = process.env.GITHUB_TOKEN
+
+    if (!repo) {
       return NextResponse.json({
+        error: "Repository not specified",
+        message: "Please provide repo parameter (e.g., ?repo=owner/repo) or set GITHUB_REPO environment variable",
         changelog: [],
-        message: "Not a git repository",
-      })
+      }, { status: 400 })
     }
 
-    // Get git log with format: hash|date|author|authorEmail|subject|body
-    const { stdout } = await execAsync(
-      'git log --pretty=format:"%H|%aI|%an|%ae|%s|%b" --date=iso --no-merges -50'
+    // Validate repo format
+    if (!repo.includes("/")) {
+      return NextResponse.json({
+        error: "Invalid repository format",
+        message: "Repository should be in format: owner/repo",
+        changelog: [],
+      }, { status: 400 })
+    }
+
+    const headers: HeadersInit = {
+      "Accept": "application/vnd.github.v3+json",
+      "User-Agent": "Anbu-AI-Changelog",
+    }
+
+    if (token) {
+      headers["Authorization"] = `Bearer ${token}`
+    }
+
+    // Fetch commits from GitHub API
+    const response = await fetch(
+      `https://api.github.com/repos/${repo}/commits?per_page=50`,
+      { headers, next: { revalidate: 300 } } // Cache for 5 minutes
     )
 
-    if (!stdout.trim()) {
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}))
+      return NextResponse.json({
+        error: "Failed to fetch from GitHub",
+        message: errorData.message || `GitHub API returned ${response.status}`,
+        changelog: [],
+        rateLimitRemaining: response.headers.get("x-ratelimit-remaining"),
+      }, { status: response.status })
+    }
+
+    const commitsData: GitHubCommit[] = await response.json()
+
+    if (!Array.isArray(commitsData) || commitsData.length === 0) {
       return NextResponse.json({
         changelog: [],
         message: "No commits found",
       })
     }
 
-    const lines = stdout.trim().split("\n")
-    const commits: GitCommit[] = []
+    // Fetch detailed commit data with file changes
+    const commits: GitCommit[] = await Promise.all(
+      commitsData.map(async (commit) => {
+        // Fetch detailed commit to get file changes
+        let files: string[] = []
+        let additions = 0
+        let deletions = 0
+        let filesChanged = 0
 
-    // Parse each commit
-    for (const line of lines) {
-      const parts = line.split("|")
-      if (parts.length < 5) continue
-      
-      const [hash, date, author, authorEmail, subject, ...bodyParts] = parts
-      const message = subject
-      const body = bodyParts.join("|").trim()
+        try {
+          const detailResponse = await fetch(
+            `https://api.github.com/repos/${repo}/commits/${commit.sha}`,
+            { headers, next: { revalidate: 3600 } } // Cache for 1 hour
+          )
 
-      // Get files changed in this commit with stats
-      let files: string[] = []
-      let additions = 0
-      let deletions = 0
-      let filesChanged = 0
-      
-      try {
-        // Get file names
-        const { stdout: filesOut } = await execAsync(`git show --name-only --pretty=format: ${hash}`)
-        files = filesOut
-          .trim()
-          .split("\n")
-          .filter((f) => f.length > 0)
-        
-        filesChanged = files.length
-        
-        // Get stats (additions/deletions)
-        const { stdout: statsOut } = await execAsync(`git show --shortstat --pretty=format: ${hash}`)
-        const statsMatch = statsOut.match(/(\d+) insertions?\(\+\)|(\d+) deletions?\(-\)/)
-        if (statsMatch) {
-          additions = parseInt(statsMatch[1] || "0")
-          deletions = parseInt(statsMatch[2] || "0")
+          if (detailResponse.ok) {
+            const detailData = await detailResponse.json()
+            
+            if (detailData.files) {
+              files = detailData.files.map((f: any) => f.filename)
+              filesChanged = detailData.files.length
+              additions = detailData.stats?.additions || 0
+              deletions = detailData.stats?.deletions || 0
+            }
+          }
+        } catch {
+          // Continue without detailed stats if fetch fails
         }
-      } catch {
-        // If we can't get files, just continue
-      }
 
-      commits.push({
-        hash,
-        date,
-        author,
-        authorEmail,
-        message,
-        body,
-        files,
-        additions,
-        deletions,
-        filesChanged,
+        // Split commit message into subject and body
+        const messageParts = commit.commit.message.split("\n\n")
+        const message = messageParts[0]
+        const body = messageParts.slice(1).join("\n\n").trim()
+
+        return {
+          hash: commit.sha,
+          date: commit.commit.author.date,
+          author: commit.commit.author.name,
+          authorEmail: commit.commit.author.email,
+          message,
+          body,
+          files,
+          additions,
+          deletions,
+          filesChanged,
+        }
       })
-    }
+    )
 
     // Group commits by date
     const groupedByDate: { [key: string]: GitCommit[] } = {}
@@ -122,6 +175,8 @@ export async function GET() {
       changelog,
       totalCommits: commits.length,
       timestamp: new Date().toISOString(),
+      repository: repo,
+      rateLimitRemaining: response.headers.get("x-ratelimit-remaining"),
     })
   } catch (error) {
     console.error("Changelog error:", error)
